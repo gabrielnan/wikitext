@@ -65,6 +65,20 @@ def main() -> None:
                         "runner sets this from task.ACC_MIN; submissions "
                         "cannot vary it. If the val score falls below the "
                         "floor, the submission is reported as DISQUALIFIED.")
+    p.add_argument("--hellaswag-subset", type=int, default=0,
+                   help="If > 0, also evaluate the trained model on a "
+                        "subset of the HellaSwag val set (auxiliary "
+                        "diagnostic, not gated, not energy-accounted). "
+                        "Set to 1000 for a stable headline reading "
+                        "(±2.8 pp 95%% CI) at ~5 s of eval cost. Set to "
+                        "10042 for the full val. See "
+                        "HELLASWAG_INTEGRATION.md for rationale.")
+    p.add_argument("--hellaswag-chars-per-ending", type=int, default=50,
+                   help="How many characters of each candidate ending to "
+                        "score under teacher-forced char-match. Default 50 "
+                        "captures most of the discriminative signal "
+                        "(endings diverge at char 0 in most items) at "
+                        "modest runtime.")
     args = p.parse_args()
 
     print(f"loading WikiText-103 from {args.data_dir} ...")
@@ -183,6 +197,26 @@ def main() -> None:
     print(f"val  char-accuracy : {val_result.accuracy:.4f}")
     print(f"val  chars         : {val_result.n_chars:,}")
 
+    # Auxiliary HellaSwag eval — diagnostic only, not gated, not
+    # energy-accounted (consistent with the existing "eval is unmetered"
+    # rule). Opt-in via --hellaswag-subset.
+    hellaswag_acc: float | None = None
+    if args.hellaswag_subset and args.hellaswag_subset > 0:
+        from hellaswag_eval import evaluate_hellaswag, load_hellaswag_val
+        print(f"evaluating on HellaSwag val "
+              f"(subset={args.hellaswag_subset}, "
+              f"chars_per_ending={args.hellaswag_chars_per_ending}) ...")
+        hs_items = load_hellaswag_val()
+        hs_result = evaluate_hellaswag(
+            model,
+            hs_items,
+            n_items=args.hellaswag_subset,
+            chars_per_ending=args.hellaswag_chars_per_ending,
+            progress_every=max(1, args.hellaswag_subset // 20),
+        )
+        print(hs_result)
+        hellaswag_acc = hs_result.accuracy
+
     if args.results_json is not None:
         payload = {
             "submission": submission_name,
@@ -192,6 +226,15 @@ def main() -> None:
             "total_energy_J": m.total_energy_J,
             "val_char_accuracy": val_result.accuracy,
             "val_chars": val_result.n_chars,
+            "hellaswag_acc": hellaswag_acc,
+            "hellaswag_n_items": (
+                args.hellaswag_subset if hellaswag_acc is not None else None
+            ),
+            "hellaswag_chars_per_ending": (
+                args.hellaswag_chars_per_ending
+                if hellaswag_acc is not None
+                else None
+            ),
             "gpu_name": _gpu_name(),
             "date_utc": _utc_now(),
         }
